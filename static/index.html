@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PDF Chat • RAG</title>
+  <style>
+    :root { --bg:#0b1220; --card:#0f1a2f; --muted:#9fb0d0; --text:#eaf0ff; --accent:#6ea8fe; --ok:#3ddc97; --warn:#ffcc66; }
+    *{ box-sizing:border-box; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    body{ margin:0; background:linear-gradient(180deg,#070b14,#0b1220 30%, #070b14); color:var(--text); }
+    .wrap{ max-width:980px; margin:0 auto; padding:28px 16px 60px; }
+    .top{ display:flex; gap:12px; align-items:center; justify-content:space-between; margin-bottom:18px; }
+    .brand{ display:flex; flex-direction:column; }
+    .brand b{ font-size:18px; letter-spacing:.2px; }
+    .brand span{ color:var(--muted); font-size:13px; }
+    .grid{ display:grid; grid-template-columns: 1fr; gap:14px; }
+    @media (min-width: 900px){ .grid{ grid-template-columns: 1fr 1fr; } }
+    .card{ background:rgba(15,26,47,.85); border:1px solid rgba(110,168,254,.15); border-radius:16px; padding:16px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+    h3{ margin:0 0 10px; font-size:14px; color:var(--muted); font-weight:600; letter-spacing:.35px; text-transform:uppercase; }
+    label{ display:block; font-size:13px; color:var(--muted); margin:10px 0 6px; }
+    input[type="text"]{
+      width:100%; padding:12px 12px; border-radius:12px; border:1px solid rgba(159,176,208,.25);
+      background:#0a1326; color:var(--text); outline:none;
+    }
+    input[type="file"]{ width:100%; padding:10px; border-radius:12px; border:1px dashed rgba(159,176,208,.35); background:#0a1326; color:var(--muted); }
+    button{
+      border:0; padding:11px 14px; border-radius:12px; cursor:pointer; font-weight:650;
+      background:linear-gradient(135deg,var(--accent),#9a7bff); color:#07101f;
+      transition: transform .05s ease;
+    }
+    button:active{ transform: translateY(1px); }
+    .row{ display:flex; gap:10px; align-items:center; margin-top:12px; flex-wrap:wrap; }
+    .pill{ font-size:12px; color:var(--muted); padding:6px 10px; border:1px solid rgba(159,176,208,.22); border-radius:999px; background:rgba(10,19,38,.6); }
+    .pill.ok{ border-color: rgba(61,220,151,.35); color: #bff5df; }
+    .pill.warn{ border-color: rgba(255,204,102,.35); color: #ffe8b5; }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    pre{
+      white-space:pre-wrap; word-break:break-word;
+      background:#0a1326; border:1px solid rgba(159,176,208,.18); border-radius:14px;
+      padding:12px; margin:10px 0 0; min-height: 160px;
+    }
+    .small{ font-size:12px; color:var(--muted); margin-top:8px; }
+    .split{ display:flex; gap:10px; flex-wrap:wrap; }
+    .split > *{ flex:1 1 220px; }
+    a{ color: #b7ccff; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="brand">
+        <b>PDF Chat</b>
+        <span>FastAPI • Chroma • Embeddings • Gemini</span>
+      </div>
+      <div class="pill mono" id="apiStatus">API: checking…</div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>1) Upload PDF</h3>
+        <label>Select PDF</label>
+        <input type="file" id="pdfFile" accept="application/pdf" />
+        <div class="row">
+          <button id="uploadBtn">Upload</button>
+          <div class="pill mono" id="uploadStatus">No file uploaded</div>
+        </div>
+
+        <div class="split">
+          <div>
+            <label>doc_id (auto)</label>
+            <input class="mono" type="text" id="docId" placeholder="doc_id will appear after upload" />
+          </div>
+          <div>
+            <label>Chunks</label>
+            <input class="mono" type="text" id="chunksCount" placeholder="-" disabled />
+          </div>
+        </div>
+
+        <div class="small">Tip: upload first, then ask questions. Keep the exact <span class="mono">doc_id</span>.</div>
+      </div>
+
+      <div class="card">
+        <h3>2) Ask Question</h3>
+        <label>Question</label>
+        <input type="text" id="question" placeholder="e.g., What skills are mentioned in this resume?" />
+        <div class="row">
+          <button id="askBtn">Ask</button>
+          <button id="clearBtn" style="background:rgba(159,176,208,.18); color:var(--text); border:1px solid rgba(159,176,208,.25);">Clear</button>
+          <div class="pill mono" id="askStatus">Ready</div>
+        </div>
+
+        <h3 style="margin-top:14px;">Answer</h3>
+        <pre id="answerBox" class="mono">Upload a PDF, then ask a question.</pre>
+
+        <details style="margin-top:10px;">
+          <summary class="small">Show retrieved chunks</summary>
+          <pre id="chunksBox" class="mono"></pre>
+        </details>
+
+        <div class="small">
+          Endpoint: <span class="mono">/upload</span> + <span class="mono">/ask</span> • UI: <span class="mono">/app</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const uploadBtn = document.getElementById("uploadBtn");
+    const askBtn = document.getElementById("askBtn");
+    const clearBtn = document.getElementById("clearBtn");
+
+    const apiBase = ""; // same origin (recommended in deployment)
+    const apiStatus = document.getElementById("apiStatus");
+
+    async function ping() {
+      try {
+        const res = await fetch(apiBase + "/docs", { method: "GET" });
+        apiStatus.textContent = res.ok ? "API: online" : "API: issue";
+        apiStatus.className = "pill mono " + (res.ok ? "ok" : "warn");
+      } catch {
+        apiStatus.textContent = "API: offline";
+        apiStatus.className = "pill mono warn";
+      }
+    }
+    ping();
+
+    uploadBtn.onclick = async () => {
+      const fileInput = document.getElementById("pdfFile");
+      const uploadStatus = document.getElementById("uploadStatus");
+      const docId = document.getElementById("docId");
+      const chunksCount = document.getElementById("chunksCount");
+
+      if (!fileInput.files.length) {
+        uploadStatus.textContent = "Select a PDF first";
+        uploadStatus.className = "pill mono warn";
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("file", fileInput.files[0]);
+
+      uploadStatus.textContent = "Uploading…";
+      uploadStatus.className = "pill mono";
+
+      const res = await fetch(apiBase + "/upload", { method: "POST", body: formData });
+      const data = await res.json();
+
+      if (!res.ok) {
+        uploadStatus.textContent = "Upload failed";
+        uploadStatus.className = "pill mono warn";
+        document.getElementById("answerBox").textContent = JSON.stringify(data, null, 2);
+        return;
+      }
+
+      docId.value = data.doc_id || data.filename || "";
+      chunksCount.value = data.total_chunks ?? "-";
+
+      uploadStatus.textContent = "Uploaded ✅";
+      uploadStatus.className = "pill mono ok";
+    };
+
+    askBtn.onclick = async () => {
+      const docId = document.getElementById("docId").value.trim();
+      const question = document.getElementById("question").value.trim();
+      const askStatus = document.getElementById("askStatus");
+
+      if (!docId || !question) {
+        askStatus.textContent = "doc_id + question required";
+        askStatus.className = "pill mono warn";
+        return;
+      }
+
+      askStatus.textContent = "Thinking…";
+      askStatus.className = "pill mono";
+      document.getElementById("answerBox").textContent = "Thinking…";
+      document.getElementById("chunksBox").textContent = "";
+
+      const res = await fetch(apiBase + "/ask", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ doc_id: docId, question })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        askStatus.textContent = "Ask failed";
+        askStatus.className = "pill mono warn";
+        document.getElementById("answerBox").textContent = JSON.stringify(data, null, 2);
+        return;
+      }
+
+      askStatus.textContent = "Done ✅";
+      askStatus.className = "pill mono ok";
+
+      document.getElementById("answerBox").textContent = data.answer || "(no answer returned)";
+      document.getElementById("chunksBox").textContent = (data.retrieved_chunks || []).join("\n\n---\n\n");
+    };
+
+    clearBtn.onclick = () => {
+      document.getElementById("question").value = "";
+      document.getElementById("answerBox").textContent = "Cleared.";
+      document.getElementById("chunksBox").textContent = "";
+      const askStatus = document.getElementById("askStatus");
+      askStatus.textContent = "Ready";
+      askStatus.className = "pill mono";
+    };
+  </script>
+</body>
+</html>
